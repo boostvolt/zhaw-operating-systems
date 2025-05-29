@@ -666,6 +666,97 @@ Develop a program that creates a "Zombie Process". Technically, when a child pro
 
 Modify your program such that the parent terminates before the child and explain what happens.
 
+**[Lab Output & Explanation]**
+
+- Source code (`nozombie.c`):
+
+  ```c
+  #include <stdio.h>
+  #include <stdlib.h>
+  #include <sys/types.h>
+  #include <unistd.h>
+
+  int main() {
+      pid_t pid = fork();
+      if (pid < 0) {
+          perror("fork failed");
+          exit(1);
+      }
+      if (pid == 0) {
+          // Child process: sleep longer than parent
+          printf("[Child] PID: %d, parent PID: %d. Sleeping 30s...\n", getpid(), getppid());
+          sleep(30);
+          printf("[Child] PID: %d, parent PID: %d. Exiting.\n", getpid(), getppid());
+      } else {
+          // Parent process: exit immediately
+          printf("[Parent] PID: %d, child PID: %d. Exiting immediately.\n", getpid(), pid);
+          exit(0);
+      }
+      return 0;
+  }
+  ```
+
+- Compile and run in background:
+
+  ```sh
+  gcc -o nozombie nozombie.c
+  ./nozombie & echo $!
+  ```
+
+  Output:
+
+  ```sh
+  [1] 37001
+  37001
+  [Parent] PID: 37001, child PID: 37031. Exiting immediately.
+  [Child] PID: 37031, parent PID: 37001. Sleeping 30s...
+  ```
+
+- While the child is sleeping, check for zombie (defunct) processes:
+
+  ```sh
+  ps -l | grep 37031
+  ```
+
+  Output:
+
+  ```sh
+      501 37031 1 ... SN   ./nozombie
+  ```
+
+  - The child process is running (state `S` = sleeping), and its parent PID is now `1` (init/systemd), because the original parent exited.
+  - There is **no** `<defunct>` (zombie) process.
+
+- Check for all zombies:
+
+  ```sh
+  ps -l | grep defunct
+  ```
+
+  Output:
+
+  ```sh
+  (no output)
+  ```
+
+- Wait for the child to finish:
+
+  ```sh
+  # Wait ~30s, then:
+  [Child] PID: 37031, parent PID: 1. Exiting.
+  [1]  + done       ./nozombie
+  ```
+
+**Explanation:**
+
+- When the parent process exits before the child, the child is immediately adopted by the `init` process (PID 1, usually `systemd`).
+- The `init` process automatically calls `wait()` for any orphaned child processes when they terminate, so no zombie is left behind.
+- You can see the child's new parent PID is 1 while it is running.
+- **Key point:**
+  - If a parent process does not call `wait()` but remains alive, its dead children become zombies (see previous subtask).
+  - If the parent exits before the child, the child is reparented to `init`, which always reaps children, so no zombie remains.
+- This is why long-lived parents must call `wait()` for their children, but short-lived parents that exit quickly do not cause zombies.
+
 ## Task 2 - Multi-Threading
 
 Study the following code and explain what happens, step-by-step. How can you (developer) define what should be shared between parent and child?
@@ -701,14 +792,174 @@ int main(int argc, char *argv[]) {
 }
 ```
 
+**[Lab Output & Explanation]**
+
+### Step-by-step Explanation
+
+1. **Stack Allocation**
+
+   - `stack = mmap(...)` allocates a new memory region of size `STACK_SIZE` (1 MiB) for the child stack. This is required because `clone()` (unlike `fork()`) expects the caller to provide a stack for the child.
+   - `MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK` ensures a private, anonymous, stack-appropriate region.
+
+2. **Stack Pointer Setup**
+
+   - `stackTop = stack + STACK_SIZE;` sets the stack pointer to the top of the allocated region (stacks grow downward on x86/Linux).
+
+3. **clone() System Call**
+
+   - `pid = clone(childFunc, stackTop, CLONE_NEWUTS | SIGCHLD, argv[1]);`
+     - `childFunc` is the function the child will execute (like a thread entry point).
+     - `stackTop` is the initial stack pointer for the child.
+     - `CLONE_NEWUTS` creates a new UTS namespace for the child (separate hostname/domainname from the parent).
+     - `SIGCHLD` means the parent will receive a SIGCHLD when the child terminates (like `fork()`).
+     - `argv[1]` is passed as the argument to `childFunc`.
+   - The child starts running `childFunc(argv[1])` on its own stack.
+   - The parent continues after `clone()` with the returned child PID.
+
+4. **waitpid()**
+   - The parent waits for the child to terminate using `waitpid(pid, NULL, 0);`.
+   - After the child exits, the parent prints "child has terminated" and exits.
+
+### What is shared between parent and child?
+
+- By default, with only `SIGCHLD` (and not `CLONE_VM`, `CLONE_FS`, etc.), the child is a separate process, similar to `fork()`, but with a new UTS namespace (due to `CLONE_NEWUTS`).
+- **Not shared:**
+  - Address space (memory)
+  - File descriptors
+  - Working directory
+  - Signal handlers
+- **Shared:**
+  - Nothing, except the UTS namespace is new for the child (not shared with parent).
+
+### How can a developer define what is shared?
+
+- The `clone()` system call allows fine-grained control over what is shared between parent and child via its flags:
+
+| Flag          | What is shared?                                |
+| ------------- | ---------------------------------------------- |
+| CLONE_VM      | Memory space (address space)                   |
+| CLONE_FS      | File system info (cwd, root, umask)            |
+| CLONE_FILES   | File descriptors                               |
+| CLONE_SIGHAND | Signal handlers                                |
+| CLONE_THREAD  | Thread group (becomes a thread, not a process) |
+| CLONE_NEWUTS  | New UTS namespace (hostname/domain)            |
+| CLONE_NEWNS   | New mount namespace                            |
+| CLONE_SYSVSEM | System V SEM_UNDO semantics                    |
+| CLONE_PARENT  | Parent process                                 |
+| CLONE_PTRACE  | ptrace behavior                                |
+| ...           | ...                                            |
+
+- By combining these flags, a developer can create either a process (like `fork()`), a thread (like `pthread_create()`), or something in between (e.g., a process with shared file descriptors but separate memory).
+- For example, `CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD` is what `pthread_create()` uses to create threads in the same process.
+
+### Summary Table
+
+| clone() Flags  | Resulting Relationship         |
+| -------------- | ------------------------------ |
+| Only SIGCHLD   | Like fork() (separate process) |
+| + CLONE_VM     | Shared memory                  |
+| + CLONE_THREAD | Thread (shared everything)     |
+| + CLONE_NEWUTS | New UTS namespace (child only) |
+
+### Example: What happens in this code?
+
+- The child runs `childFunc(argv[1])` in a new UTS namespace (can set its own hostname).
+- The parent waits for the child to finish.
+- No memory, file descriptors, or signal handlers are shared.
+- This is a minimal example of using `clone()` to create a process with a new namespace, which is the basis for containers (e.g., Docker, LXC).
+
+**Exam tip:**
+
+- `clone()` is the foundation for both threads and containers in Linux. The choice of flags determines the degree of sharing and isolation.
+- For threads: use all sharing flags. For containers: use namespace flags for isolation.
+
 ## Task 3 - Kernel Threads
 
 Which process has PID #2?
+
+**[Lab Output & Explanation]**
+
+```sh
+ps -p 2 -o pid,comm,user,state
+```
+
+Output:
+
+```sh
+  PID COMMAND         USER     S
+    2 kthreadd        root     S
+```
+
+- PID 2 is always the kernel thread daemon `kthreadd` on Linux systems.
+- It is the ancestor of all kernel threads and is owned by `root`.
 
 ---
 
 Identify any Kernel Thread and find out on which CPU it is running. Recall, the /proc directory is providing information about running processes of all kinds.
 
----
+**[Lab Output & Explanation]**
 
-Select any thread called "Kworker" and explain the state by querying it with the ps command.
+- To list kernel threads, filter for known kernel thread names (e.g., kworker, rcu) using `ps` and `grep`:
+
+  ```sh
+  ps -e -o pid,comm,psr,state | grep kworker | cat
+  ```
+
+  Output (abridged):
+
+  ```sh
+     PID COMMAND         PSR STATE
+       6 kworker/0:0H-kb   0 I
+      20 kworker/1:0H-kb   1 I
+     112 kworker/u5:0      0 I
+     335 kworker/0:1H-kb   0 I
+     371 kworker/1:1H-kb   1 I
+   17940 kworker/1:2-eve   1 I
+   18105 kworker/u4:0-fl   0 I
+   24173 kworker/u4:1-ev   0 I
+   24791 kworker/0:0-eve   0 I
+   25539 kworker/1:0-eve   1 I
+   25618 kworker/0:1-cgr   0 I
+   25850 kworker/1:1-cgr   1 I
+   25851 kworker/1:3       1 I
+   26030 kworker/0:2       0 I
+  ```
+
+  - The `PSR` column shows the CPU the thread is (or was last) running on. For example, `kworker/0:0H-kb` (PID 6) is on CPU 0.
+  - The `I` state means idle (kernel thread is not currently running any work).
+
+- You can also filter for other kernel threads, e.g., rcu:
+
+  ```sh
+  ps -e -o pid,comm,psr,state | grep rcu | cat
+  ```
+
+  Output:
+
+  ```sh
+        3 rcu_gp            0 I
+        4 rcu_par_gp        0 I
+       11 rcu_sched         0 I
+       23 rcu_tasks_kthre   1 S
+  ```
+
+**How filtering works:**
+
+- The `-e` option shows all processes, including kernel threads.
+- The `-o` option customizes the columns (PID, command, CPU, state).
+- Filtering for kernel threads is done by `grep` for known kernel thread names (e.g., `kworker`, `rcu`).
+- On this system, kernel thread names do **not** appear in square brackets in the `comm` field, so filter by name instead.
+
+**Summary Table**
+
+| Thread Name     | PID | State | CPU | Explanation                  |
+| --------------- | --- | ----- | --- | ---------------------------- |
+| kworker/0:0H-kb | 6   | I     | 0   | Kernel worker, idle on CPU 0 |
+| kworker/1:0H-kb | 20  | I     | 1   | Kernel worker, idle on CPU 1 |
+| rcu_gp          | 3   | I     | 0   | RCU grace period thread      |
+| rcu_sched       | 11  | I     | 0   | RCU scheduler thread         |
+
+**Exam tip:**
+
+- Use `ps -e -o pid,comm,psr,state | grep <name>` to see kernel threads and their CPU.
+- State `I` = idle, `S` = sleeping, `R` = running, `D` = uninterruptible sleep.
