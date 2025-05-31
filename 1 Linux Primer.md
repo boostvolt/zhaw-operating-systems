@@ -18,7 +18,7 @@ The following resources and tools are required for this laboratory session:
 - OpenStack Horizon dashboard: <https://ned.cloudlab.zhaw.ch>
 - OpenStack account details: please contact the lab assistant in case you already have not received your access credentials.
 
-**Time**
+### Time
 
 The entire session will take 90 minutes.
 

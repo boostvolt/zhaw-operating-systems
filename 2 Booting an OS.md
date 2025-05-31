@@ -21,11 +21,11 @@ The following resources and tools are required for this laboratory session:
 
 <https://www.digitalocean.com/community/tutorials/understanding-systemd-units-and-unit-files>
 
-**Time**
+### Time
 
 The entire session will take 90 minutes.
 
-**Assessment**
+### Assessment
 
 No assessment foreseen
 

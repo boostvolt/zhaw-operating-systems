@@ -24,7 +24,7 @@ The following resources and tools are required for this laboratory session:
 
 The entire session will require 90 minutes.
 
-**Assessment**
+### Assessment
 
 No assessment foreseen
 
