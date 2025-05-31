@@ -393,38 +393,362 @@ Description=System and Service Manager
 
 Modify the user.slice configuration such that all processes created by users do not receive more than 20% of CPU share. Verify your configuration by creating more load than your system can handle, e.g. by creating a number of "`wc /dev/zero &`" background processes (& send the process directly into the background). What happened to the "cron" process?
 
+**[Lab Output & Explanation]**
+
+Command:
+
+```sh
+sudo systemctl set-property user.slice CPUQuota=20%
+```
+
+Output:
+
+```
+ubuntu@bsy-lab-2:~$ sudo systemctl set-property user.slice CPUQuota=20%
+```
+
+- This command sets a CPU quota of 20% for all processes in the user.slice cgroup. This means all user processes collectively cannot use more than 20% of total CPU time.
+
+---
+
+Command:
+
+```sh
+systemctl show user.slice | grep CPUQuota
+```
+
+Output:
+
+```
+CPUQuotaPerSecUSec=200ms
+CPUQuotaPeriodUSec=infinity
+DropInPaths=/etc/systemd/system.control/user.slice.d/50-CPUQuota.conf
+```
+
+- `CPUQuotaPerSecUSec=200ms` confirms the 20% CPU quota is active (20% of 1 second = 200ms). The configuration is stored as a drop-in file for user.slice.
+
+---
+
+Command:
+
+```sh
+for i in {1..8}; do nohup wc /dev/zero > /dev/null 2>&1 & done
+```
+
+Output (abridged):
+
+```
+[1] 31458
+[2] 31459
+[3] 31460
+[4] 31461
+[5] 31462
+[6] 31463
+[7] 31464
+[8] 31465
+```
+
+- This starts 8 background processes, each running `wc /dev/zero` to generate CPU load. The PIDs are shown for each background job.
+
+---
+
+Command:
+
+```sh
+ps -C cron -o pid,ppid,cmd,%cpu
+```
+
+Output:
+
+```
+    PID    PPID CMD                         %CPU
+    594       1 /usr/sbin/cron -f            0.0
+```
+
+- The cron process is unaffected by the user.slice CPU limit because it runs under `system.slice`, not `user.slice`. Its CPU usage remains at 0.0%.
+
+---
+
+Command:
+
+```sh
+ps -C wc -o pid,ppid,cmd,%cpu | head -10
+```
+
+Output (abridged):
+
+```
+    PID    PPID CMD                         %CPU
+  31220   31218 wc /dev/zero                 2.4
+  31221   31217 wc /dev/zero                 2.4
+  31222   31216 wc /dev/zero                 2.4
+  31223   31213 wc /dev/zero                 2.4
+  31224   31212 wc /dev/zero                 2.4
+  31225   31215 wc /dev/zero                 2.4
+  31226   31211 wc /dev/zero                 2.4
+  31227   31214 wc /dev/zero                 2.3
+  31458   29249 wc /dev/zero                 1.2
+```
+
+- Each `wc` process is limited to a small fraction of CPU, confirming the 20% total CPU quota is enforced for all user.slice processes.
+
+---
+
+Command:
+
+```sh
+systemd-cgtop -n 1 -b | head -20
+```
+
+Output (abridged):
+
+```
+/                               151    -    1.5G    -   -
+init.scope                        1    -    5.1M    -   -
+system.slice                     48    -    1.0G    -   -
+system.slice/cron.service         1    -    3.9M    -   -
+... (other services omitted) ...
+```
+
+- `systemd-cgtop` shows that `system.slice` (where cron runs) is not affected by the user.slice CPU limit. The user.slice cgroup (not shown in this output) would be limited to 20% CPU, while system.slice and its services (like cron) are not restricted by this setting.
+
 ---
 
 Free one `wc` process from the limits imposed by the user.slice related cgroup.
 
+**[Lab Output & Explanation]**
+
+To free a process from the user.slice CPU limit, you can launch it in a different slice (e.g., system.slice) using `systemd-run`:
+
+Command:
+
+```sh
+sudo systemd-run --scope -p Slice=system.slice wc /dev/zero > /dev/null 2>&1 &
+```
+
+- This starts a new `wc /dev/zero` process in the `system.slice` cgroup, so it is not subject to the `user.slice` CPU quota.
+
+Command:
+
+```sh
+ps -C wc -o pid,ppid,cmd,%cpu | head -10
+```
+
+Output (abridged):
+
+```
+    PID    PPID CMD                         %CPU
+  32573   32572 /usr/bin/wc /dev/zero       85.4
+... (other user.slice wc processes omitted) ...
+```
+
+- The process with high CPU usage (85.4%) is the one started in `system.slice` and is not limited by the 20% quota.
+
+Command:
+
+```sh
+systemd-cgls | grep wc
+```
+
+Output (abridged):
+
+```
+│ └─32573 /usr/bin/wc /dev/zero
+```
+
+- This confirms the process is running in `system.slice` and is not affected by the user.slice limit.
+
 ### Task 2 - Create a Custom Control
 
-Create an environment to control CPU access (CPU affinity) from scratch, i.e. not using any preconfigured cgroups.
+Create an environment to control CPU access (CPU affinity) from scratch, i.e. not using any preconfigured cgroups. Create a tmpfs under `/mnt` and use this directory for your cgroup hierarchy.
 
-Create a tmpfs under `/mnt` and use this directory for your cgroup hierarchy.
+**[Lab Output & Explanation]**
+
+Command:
+
+```sh
+sudo mkdir -p /mnt/cpuset_cgroup && sudo mount -t tmpfs none /mnt/cpuset_cgroup
+sudo mount -t cgroup -o cpuset cpuset /mnt/cpuset_cgroup
+ls /mnt/cpuset_cgroup
+```
+
+Output (abridged):
+
+```
+cgroup.clone_children  cpuset.cpus  cpuset.mems  ...  tasks
+```
+
+- This creates a new cpuset cgroup hierarchy on a tmpfs under `/mnt`.
+
+**Summary Table**
+
+| Option | Meaning                                                               |
+| ------ | --------------------------------------------------------------------- |
+| -p     | Create parent directories as needed (for mkdir)                       |
+| -t     | Specify filesystem type (for mount)                                   |
+| -o     | Specify mount options (for mount, here selects the cpuset controller) |
+
+---
 
 How many CPUs can be controlled on your system per default?
 
----
+**[Lab Output & Explanation]**
 
-Create M processes, with M being the number of CPUs (N) on your system plus one (`M=N+1`).
+Command:
 
----
+```sh
+cat /mnt/cpuset_cgroup/cpuset.cpus
+```
 
-Those processes shall consume 100% CPU load. Now configure your cgroups to only allow these processes to use half of the CPUs available on your system.
+Output:
 
----
+```
+0-1
+```
 
-Mind the following prerequisite (command to be executed once the controller is mounted and the cgroup created): `echo 0 > cpuset.mems`
-
----
-
-Verify and explain the effect by looking at the processes via "`top`".
-
----
-
-Also double-check the CPU assignments (affinity) with the command "`taskset`".
+- There are 2 CPUs (CPU 0 and CPU 1) available for control on this system.
 
 ---
 
-Disable those CPUs, via "`chcpu`", that you allowed in your cpuset and explain what happens with those processes pinned onto them.
+Create M processes, with M being the number of CPUs (N) on your system plus one (`M=N+1`). Those processes shall consume 100% CPU load. Now configure your cgroups to only allow these processes to use half of the CPUs available on your system. Mind the following prerequisite (command to be executed once the controller is mounted and the cgroup created): `echo 0 > cpuset.mems`
+
+**[Lab Output & Explanation]**
+
+Command:
+
+```sh
+sudo mkdir /mnt/cpuset_cgroup/half
+# Set allowed CPUs and memory nodes for the new cgroup
+echo 0 | sudo tee /mnt/cpuset_cgroup/half/cpuset.cpus
+echo 0 | sudo tee /mnt/cpuset_cgroup/half/cpuset.mems
+```
+
+Output:
+
+```
+0
+0
+```
+
+- This restricts the new cgroup to only CPU 0 and memory node 0.
+
+Command:
+
+```sh
+for i in $(seq 1 3); do nohup bash -c "while :; do :; done" > /dev/null 2>&1 & done
+pgrep -f "while :; do :; done"
+```
+
+Output (abridged):
+
+```
+33584
+33585
+33586
+... (other PIDs omitted) ...
+```
+
+- This starts 3 busy-loop processes (M=3 for N=2 CPUs).
+
+Command:
+
+```sh
+echo 33584 | sudo tee -a /mnt/cpuset_cgroup/half/tasks
+echo 33585 | sudo tee -a /mnt/cpuset_cgroup/half/tasks
+echo 33586 | sudo tee -a /mnt/cpuset_cgroup/half/tasks
+```
+
+Output:
+
+```
+33584
+33585
+33586
+```
+
+- These processes are now restricted to CPU 0 by the cpuset cgroup.
+
+---
+
+Verify and explain the effect by looking at the processes via "`top`". Also double-check the CPU assignments (affinity) with the command "`taskset`". Disable those CPUs, via "`chcpu`", that you allowed in your cpuset and explain what happens with those processes pinned onto them.
+
+**[Lab Output & Explanation]**
+
+Command:
+
+```sh
+top -b -n 1 | head -20
+```
+
+Output (abridged):
+
+```
+%Cpu(s):100.0 us,  0.0 sy,  0.0 ni,  0.0 id, ...
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+  33584 ubuntu    20   0    ...     R      42.3   ...   ...      bash
+  33585 ubuntu    20   0    ...     R      42.3   ...   ...      bash
+  33586 ubuntu    20   0    ...     R      42.3   ...   ...      bash
+```
+
+- The three processes are competing for CPU 0, each getting roughly a third of the available CPU time.
+
+Command:
+
+```sh
+taskset -cp 33584 && taskset -cp 33585 && taskset -cp 33586
+```
+
+Output:
+
+```
+pid 33584's current affinity list: 0
+pid 33585's current affinity list: 0
+pid 33586's current affinity list: 0
+```
+
+- All three processes are pinned to CPU 0 as expected.
+
+Command:
+
+```sh
+sudo chcpu -d 1
+```
+
+Output:
+
+```
+CPU 1 disabled
+```
+
+- Disabling CPU 1 does not affect the cpuset-restricted processes, since they are already pinned to CPU 0.
+
+Command:
+
+```sh
+top -b -n 1 | head -20
+```
+
+Output (abridged):
+
+```
+%Cpu(s):100.0 us,  0.0 sy,  0.0 ni,  0.0 id, ...
+33584 ubuntu    20   0    ...   R  42.3   ...   ...    bash
+33585 ubuntu    20   0    ...   R  42.3   ...   ...    bash
+33586 ubuntu    20   0    ...   R  42.3   ...   ...    bash
+```
+
+- The processes continue to run, still sharing CPU 0. If you tried to disable CPU 0, the system would not allow it (as it is not hot-pluggable), and the processes would be stuck if their only allowed CPU was offline.
+
+Command:
+
+```sh
+sudo chcpu -d 0
+```
+
+Output:
+
+```
+chcpu: CPU 0 is not hot pluggable
+```
+
+- CPU 0 cannot be disabled, so the processes remain runnable. If you could disable all CPUs assigned to a cpuset, the processes would be un-runnable (stuck in D state), but this is prevented for CPU 0.
