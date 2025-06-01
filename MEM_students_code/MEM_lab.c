@@ -98,6 +98,16 @@ int main(void) {
     (void) printf( "------------ Part %i:  generate some memory area\n", section++ );
 
     // ToDo 3: insert code to reserve memory  
+    int num_pages = 4;
+    void *memory_ptr = malloc(num_pages * pagesize);
+    
+    if (memory_ptr == NULL) {
+        perror("malloc failed");
+        exit(EXIT_FAILURE);
+    }
+    
+    (void) printf("Reserved %d bytes (%d pages) of memory at address %p\n", 
+                  num_pages * pagesize, num_pages, memory_ptr);
   
     
     (void) printf( "\nPress return to continue\n" );

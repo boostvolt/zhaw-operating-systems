@@ -5,7 +5,9 @@
 - [1 Linux Primer](1%20Linux%20Primer.md)
 - [2 Booting an OS](2%20Booting%20an%20OS.md)
 - [3 Processes and Threads](3%20Processes%20and%20Threads.md)
-- [4 Memory Management](4%20Memory%20Management.md)
+- [4 Scheduling](4%20Scheduling.md)
+- [5 Resource Control](5%20Resource%20Control.md)
+- [6 Memory](6%20Memory.md)
 
 ## Agent-Solved Labs: How It Works
 
