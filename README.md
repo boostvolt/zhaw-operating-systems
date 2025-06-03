@@ -8,6 +8,8 @@
 - [4 Scheduling](4%20Scheduling.md)
 - [5 Resource Control](5%20Resource%20Control.md)
 - [6 Memory](6%20Memory.md)
+- [7 Input Output](7%20Input%20Output.md)
+- [8 File Systems](8%20File%20Systems.md)
 
 ## Agent-Solved Labs: How It Works
 
