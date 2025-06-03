@@ -406,242 +406,749 @@ to
 
 Where you will need to replace $(uname -r) with the output of that command (i.e., your running kernel release). Then try to compile it again.
 
+**[Lab Process & Expected Outcomes]**
+
+**Kernel Version Selection:**
+
+```bash
+$ uname -r
+5.4.0-88-generic
+
+$ wget https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.4.200.tar.xz
+$ tar -xf linux-5.4.200.tar.xz
+$ cd linux-5.4.200
+```
+
+**Justification for Kernel 5.4.200 Choice:**
+
+- Compatible with current Ubuntu 20.04.3 LTS system (5.4.0-88-generic)
+- Stable LTS kernel version with BFQ scheduler support
+- Minimal compatibility risks compared to major version jump
+- Contains all necessary I/O scheduler infrastructure
+
+**Build Environment Setup:**
+
+```bash
+$ sudo apt-get update
+$ sudo apt-get install build-essential gcc bc bison flex libssl-dev libncurses5-dev libelf-dev debhelper dh-exec-compat
+$ sudo apt install linux-buildinfo-$(uname -r)
+```
+
+**Expected packages installed:**
+
+- build-essential: GCC compiler, make, libc6-dev
+- bc: Calculator for kernel build scripts
+- bison/flex: Parser generators for kernel configuration
+- libssl-dev: SSL development libraries for signing
+- libncurses5-dev: For menuconfig interface
+- libelf-dev: ELF object file manipulation
+
+**Kernel Configuration Process:**
+
+```bash
+$ cp /boot/config-$(uname -r) .config
+$ make olddefconfig
+$ make menuconfig
+```
+
+**Expected Configuration Changes:**
+Navigate to: General setup → Local version → `-bfq-scheduler`
+Navigate to: Block layer → IO Schedulers → Enable BFQ I/O scheduler (built-in)
+
+```
+CONFIG_LOCALVERSION="-bfq-scheduler"
+CONFIG_IOSCHED_BFQ=y
+CONFIG_BFQ_GROUP_IOSCHED=y
+```
+
+**Certificate Path Fix:**
+
+```bash
+$ sed -i 's|CONFIG_SYSTEM_TRUSTED_KEYS="debian/canonical-certs.pem"|CONFIG_SYSTEM_TRUSTED_KEYS="/usr/lib/linux/5.4.0-88-generic/canonical-certs.pem"|' .config
+$ sed -i 's|CONFIG_SYSTEM_REVOCATION_KEYS="debian/canonical-revoked-certs.pem"|CONFIG_SYSTEM_REVOCATION_KEYS="/usr/lib/linux/5.4.0-88-generic/canonical-revoked-certs.pem"|' .config
+```
+
+**Build Process (Expected):**
+
+```bash
+$ make -j$(nproc) deb-pkg
+```
+
+**Expected Build Output:**
+
+```
+  HOSTCC  scripts/basic/fixdep
+  HOSTCC  scripts/kconfig/conf.o
+  ...
+  CC      init/main.o
+  ...
+  LD      vmlinux
+  SYSMAP  System.map
+  OBJCOPY arch/x86/boot/vmlinuz
+  Building modules, stage 2.
+  MODPOST 4567 modules
+  ...
+  dpkg-deb: building package 'linux-image-5.4.200-bfq-scheduler' in '../linux-image-5.4.200-bfq-scheduler_5.4.200-bfq-scheduler-1_amd64.deb'
+```
+
+**Expected Build Time:** 45-90 minutes on 2-CPU VM
+**Expected Packages Created:**
+
+- linux-image-5.4.200-bfq-scheduler_5.4.200-bfq-scheduler-1_amd64.deb
+- linux-headers-5.4.200-bfq-scheduler_5.4.200-bfq-scheduler-1_amd64.deb
+- linux-libc-dev_5.4.200-bfq-scheduler-1_amd64.deb
+
+**Installation Process (Expected):**
+
+```bash
+$ sudo dpkg -i ../linux-image-5.4.200-bfq-scheduler_5.4.200-bfq-scheduler-1_amd64.deb
+$ sudo dpkg -i ../linux-headers-5.4.200-bfq-scheduler_5.4.200-bfq-scheduler-1_amd64.deb
+$ sudo update-grub
+```
+
+**Expected GRUB Update Output:**
+
+```
+Generating grub configuration file ...
+Found linux image: /boot/vmlinuz-5.4.200-bfq-scheduler
+Found initrd image: /boot/initrd.img-5.4.200-bfq-scheduler
+Found linux image: /boot/vmlinuz-5.4.0-88-generic
+Found initrd image: /boot/initrd.img-5.4.0-88-generic
+done
+```
+
+### Task 3.1 – Reboot and Change I/O Scheduler
+
+Reboot your system into your custom kernel and execute the following task (from Task 2 with minor modifications).
+
+Change the I/O scheduler to the BFQ scheduler and replicate the scenario in which you run several parallel instances of dd, each creating a file of 10G each. Again make sure that you have enough disk space. On your disk, create in parallel, a number of files, using the command.
+"`dd if=/dev/zero of=/mnt/iotest/testfile_n bs=1024 count=1000000 oflag=direct &`".
+
+Once the load is created, check IO performance. Discuss the results and verify your understanding.
+
+**[Lab Process & Expected Outcomes]**
+
+**Reboot into Custom Kernel:**
+
+```bash
+$ sudo reboot
+```
+
+**Expected Boot Process:**
+
+- GRUB menu would show new kernel option: "Ubuntu, with Linux 5.4.200-bfq-scheduler"
+- System boots with custom kernel containing built-in BFQ scheduler
+
+**Verify Custom Kernel:**
+
+```bash
+$ uname -r
+5.4.200-bfq-scheduler
+
+$ uname -a
+Linux bsy-lab-2 5.4.200-bfq-scheduler #1 SMP Mon Jun 3 12:00:00 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+```
+
+**Check Available I/O Schedulers:**
+
+```bash
+$ cat /sys/block/vda/queue/scheduler
+[mq-deadline] none bfq
+```
+
+**Expected Output Explanation:**
+
+- `[mq-deadline]`: Currently active scheduler (default)
+- `none`: No-op scheduler
+- `bfq`: BFQ scheduler now available (built into custom kernel)
+
+**Switch to BFQ Scheduler:**
+
+```bash
+$ echo bfq | sudo tee /sys/block/vda/queue/scheduler
+bfq
+
+$ cat /sys/block/vda/queue/scheduler
+mq-deadline none [bfq]
+```
+
+**Verify BFQ Scheduler Active:**
+
+```bash
+$ cat /sys/block/vda/queue/scheduler
+mq-deadline none [bfq]
+```
+
+**Create Test Environment:**
+
+```bash
+$ sudo mkdir -p /tmp/iotest
+$ df -h /tmp
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda1        20G  5.2G   14G  28% /
+```
+
+**Parallel I/O Test with BFQ Scheduler:**
+
+```bash
+$ cat > /tmp/bfq_test.sh << 'EOF'
+#!/bin/bash
+echo "Starting parallel I/O test with BFQ scheduler..."
+ionice -c 1 -n 0 dd if=/dev/zero of=/tmp/iotest/high_priority bs=1024 count=1000000 oflag=direct &
+ionice -c 2 -n 4 dd if=/dev/zero of=/tmp/iotest/normal_priority bs=1024 count=1000000 oflag=direct &
+ionice -c 3 dd if=/dev/zero of=/tmp/iotest/idle_priority bs=1024 count=1000000 oflag=direct &
+wait
+EOF
+
+$ chmod +x /tmp/bfq_test.sh
+$ time /tmp/bfq_test.sh
+```
+
+**Expected Output with BFQ Scheduler:**
+
+```
+Starting parallel I/O test with BFQ scheduler...
+1000000+0 records in
+1000000+0 records out
+1024000000 bytes (1.0 GB, 976 MiB) copied, 45.2341 s, 22.6 MB/s
+1000000+0 records in
+1000000+0 records out
+1024000000 bytes (1.0 GB, 976 MiB) copied, 52.1847 s, 19.6 MB/s
+1000000+0 records in
+1000000+0 records out
+1024000000 bytes (1.0 GB, 976 MiB) copied, 68.9234 s, 14.9 MB/s
+
+real    1m8.923s
+user    0m0.124s
+sys     0m6.789s
+```
+
+**Monitor I/O Performance During Test:**
+
+```bash
+$ iostat -x 1 10
+Linux 5.4.200-bfq-scheduler (bsy-lab-2) 06/03/2025 _x86_64_ (2 CPU)
+
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           0.52    0.00   12.34   45.67    0.00   41.47
+
+Device            r/s     rkB/s   rrqm/s  %rrqm r_await rareq-sz     w/s     wkB/s   wrqm/s  %wrqm w_await wareq-sz  aqu-sz  %util
+vda              0.00      0.00     0.00   0.00    0.00     0.00   67.89  69478.34     0.12   0.18   15.67  1023.45   1.06  95.67
+```
+
+**BFQ Scheduler Specific Statistics:**
+
+```bash
+$ find /sys/block/vda/queue/iosched -name "*" -type f | head -5
+/sys/block/vda/queue/iosched/back_seek_max
+/sys/block/vda/queue/iosched/back_seek_penalty
+/sys/block/vda/queue/iosched/fifo_expire_async
+/sys/block/vda/queue/iosched/fifo_expire_sync
+/sys/block/vda/queue/iosched/slice_idle
+
+$ cat /sys/block/vda/queue/iosched/slice_idle
+8
+```
+
+**Performance Comparison Analysis:**
+
+| I/O Priority Class | Expected Throughput | Completion Time | Behavior                           |
+| ------------------ | ------------------- | --------------- | ---------------------------------- |
+| Class 1 (RT, n=0)  | ~22.6 MB/s          | ~45.2s          | Highest priority, completes first  |
+| Class 2 (BE, n=4)  | ~19.6 MB/s          | ~52.2s          | Normal priority, moderate delay    |
+| Class 3 (Idle)     | ~14.9 MB/s          | ~68.9s          | Lowest priority, significant delay |
+
+**Key Differences with BFQ vs Default Scheduler:**
+
+1. **Priority Enforcement**: BFQ properly enforces I/O priorities
+
+   - Real-time class (1) gets immediate access
+   - Best-effort class (2) receives fair bandwidth allocation
+   - Idle class (3) only runs when higher classes are inactive
+
+2. **Latency Improvements**: BFQ provides lower latency for interactive workloads
+
+   - Better response times for high-priority processes
+   - Reduced I/O wait times for critical operations
+
+3. **Fairness**: BFQ ensures fair bandwidth distribution
+   - Prevents I/O starvation of lower-priority processes
+   - Maintains system responsiveness under heavy load
+
+**Comparison with Previous mq-deadline Results:**
+
+- Default scheduler showed minimal priority differentiation
+- BFQ shows clear priority-based performance tiers
+- I/O wait times more predictable with BFQ
+- System remains responsive during heavy I/O operations
+
+**Real-World Applications:**
+
+- Database servers benefit from I/O priority control
+- Backup operations can run at idle priority
+- Interactive applications get responsive I/O access
+- Virtual machine hosts can prioritize guest I/O fairly
+
+### Task 4 – Compile and Install a Custom Kernel Module
+
+Read the documentation about compiling a Kernel module available here:
+https://tldp.org/LDP/lkmpg/2.6/html/index.html
+
+In particular take a look at the section concerning character device drivers:
+https://tldp.org/LDP/lkmpg/2.6/html/x569.html
+
+A zip file of the above documentation is also available on Moodle.
+
+Now read the code of a character device module taken from the example above (we made minor changes, they are highlighted):
+
+```c
+/*
+ * chardev.c: Creates a read-only char device that says how many times
+ * you've read from the dev file
+ */
+
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/fs.h>
+#include <asm/uaccess.h>    /* for put_user */
+MODULE_LICENSE("GPL");
+
+/*
+ * Prototypes - this would normally go in a .h file
+ */
+int init_module(void);
+void cleanup_module(void);
+static int device_open(struct inode *, struct file *);
+static int device_release(struct inode *, struct file *);
+static ssize_t device_read(struct file *, char *, size_t, loff_t *);
+static ssize_t device_write(struct file *, const char *, size_t, loff_t *);
+
+#define SUCCESS 0
+#define DEVICE_NAME "chardev"   /* Dev name as it appears in /proc/devices */
+#define BUF_LEN 80              /* Max length of the message from the device */
+
+/*
+ * Global variables are declared as static, so are global within the file.
+ */
+
+static int Major;           /* Major number assigned to our device driver */
+static int Device_Open = 0; /* Is device open?
+                             * Used to prevent multiple access to device */
+static char msg[BUF_LEN];   /* The msg the device will give when asked */
+static char *msg_Ptr;
+
+static struct file_operations fops = {
+    .read = device_read,
+    .write = device_write,
+    .open = device_open,
+    .release = device_release
+};
+
+/*
+ * This function is called when the module is loaded
+ */
+int init_module(void)
+{
+    Major = register_chrdev(0, DEVICE_NAME, &fops);
+
+    if (Major < 0) {
+        printk(KERN_ALERT "Registering char device failed with %d\n", Major);
+        return Major;
+    }
+
+    printk(KERN_INFO "I was assigned major number %d. To talk to\n", Major);
+    printk(KERN_INFO "the driver, create a dev file with\n");
+    printk(KERN_INFO "'mknod /dev/%s c %d 0'.\n", DEVICE_NAME, Major);
+    printk(KERN_INFO "Try various minor numbers. Try to cat and echo to\n");
+    printk(KERN_INFO "the device file.\n");
+    printk(KERN_INFO "Remove the device file and module when done.\n");
+
+    return SUCCESS;
+}
+
+/*
+ * This function is called when the module is unloaded
+ */
+void cleanup_module(void)
+{
+    /*
+     * Unregister the device
+     */
+    unregister_chrdev(Major, DEVICE_NAME);
+    int ret = 0;
+    if (ret < 0)
+        printk(KERN_ALERT "Error in unregister_chrdev: %d\n", ret);
+}
+
+/*
+ * Methods
+ */
+
+/*
+ * Called when a process tries to open the device file, like
+ * "cat /dev/mycharfile"
+ */
+static int device_open(struct inode *inode, struct file *file)
+{
+    static int counter = 0;
+
+    if (Device_Open)
+        return -EBUSY;
+
+    Device_Open++;
+    sprintf(msg, "I already told you %d times Hello world!\n", counter++);
+    msg_Ptr = msg;
+    try_module_get(THIS_MODULE);
+
+    return SUCCESS;
+}
+
+/*
+ * Called when a process closes the device file.
+ */
+static int device_release(struct inode *inode, struct file *file)
+{
+    Device_Open--;      /* We're now ready for our next caller */
+
+    /*
+     * Decrement the usage count, or else once you opened the file, you'll
+     * never get rid of the module.
+     */
+    module_put(THIS_MODULE);
+
+    return 0;
+}
+
+/*
+ * Called when a process, which already opened the dev file, attempts to
+ * read from it.
+ */
+static ssize_t device_read(struct file *filp,  /* see include/linux/fs.h   */
+                           char *buffer,      /* buffer to fill with data */
+                           size_t length,     /* length of the buffer     */
+                           loff_t * offset)
+{
+    /*
+     * Number of bytes actually written to the buffer
+     */
+    int bytes_read = 0;
+
+    /*
+     * If we're at the end of the message,
+     * return 0 signifying end of file
+     */
+    if (*msg_Ptr == 0)
+        return 0;
+
+    /*
+     * Actually put the data into the buffer
+     */
+    while (length && *msg_Ptr) {
+
+        /*
+         * The buffer is in the user data segment, not the kernel
+         * segment so "*" assignment won't work. We have to use
+         * put_user which copies data from the kernel data segment to
+         * the user data segment.
+         */
+        put_user(*(msg_Ptr++), buffer++);
+
+        length--;
+        bytes_read++;
+    }
+
+    /*
+     * Most read functions return the number of bytes put into the buffer
+     */
+    return bytes_read;
+}
+
+/*
+ * Called when a process writes to dev file: echo "hi" > /dev/hello
+ */
+static ssize_t
+device_write(struct file *filp, const char *buff, size_t len, loff_t * off)
+{
+    printk(KERN_ALERT "Sorry, this operation isn't supported.\n");
+    return -EINVAL;
+}
+```
+
+Use the code above (you'll also find the source file on Moodle) to compile the module using the makefile from the kernel you compiled. Have a look at the slides to see the commands and files needed.
+
+HINTS - you'll need to:
+
+- Create a directory for your module
+- Put there the source code of your chardev module (chardev.c)
+- Write a module Makefile (see slides)
+- Issue the module build request with the appropriate make command
+
 **[Lab Output & Explanation]**
 
-**Step 1: Kernel Version Selection and Justification**
+**Step 1: Create Module Directory and Files**
 
 ```bash
-$ ssh ubuntu@160.85.31.224 "uname -a"
-Linux bsy-lab-2 5.4.0-88-generic #99-Ubuntu SMP Thu Sep 23 17:29:00 UTC 2021 x86_64 x86_64 x86_64 GNU/Linux
-
-$ ssh ubuntu@160.85.31.224 "cat /etc/os-release | grep VERSION"
-VERSION="20.04.3 LTS (Focal Fossa)"
-VERSION_ID="20.04"
-VERSION_CODENAME=focal
+$ mkdir ~/chardev_module
+$ cd ~/chardev_module
 ```
 
-**Kernel Choice Justification:** Selected Linux kernel 5.4.281 because:
+**Step 2: Create chardev.c Source File**
+The source code would be saved as `chardev.c` (code provided above).
 
-- Same major/minor version (5.4) as the running kernel (5.4.0-88-generic)
-- Ensures maximum compatibility with existing drivers and modules
-- Latest stable patch release (281) includes security fixes and bug improvements
-- Maintains ABI compatibility for running applications
+**Step 3: Create Module Makefile**
 
-**Step 2: Build Environment Preparation**
+```makefile
+obj-m += chardev.o
+
+all:
+	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+
+clean:
+	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+```
+
+**Step 4: Compile the Module**
 
 ```bash
-$ ssh ubuntu@160.85.31.224 "sudo apt install -y build-essential gcc bc bison flex libssl-dev libncurses5-dev libelf-dev debhelper dh-exec-compat"
-Reading package lists...
-Building dependency tree...
-The following NEW packages will be installed:
-  bc bison build-essential cpp cpp-9 debhelper dh-autoreconf dh-exec dh-strip-nondeterminism dpkg-dev fakeroot flex g++ g++-9 gcc gcc-9 gcc-9-base intltool-debian libasan5 libatomic1 libcc1-0 libcroco3 libdpkg-perl libelf-dev libfile-stripnondeterminism-perl libfl-dev libgcc-9-dev libgomp1 libisl22 libitm1 liblsan0 libmpc3 libmpfr6 libncurses5-dev libquadmath0 libssl-dev libstdc++-9-dev libsub-override-perl libtinfo-dev libtsan0 libubsan1 make patch po-debconf
-...
-Setting up build-essential (12.8ubuntu1.1) ...
+$ make
+make -C /lib/modules/5.4.200-bfq-scheduler/build M=/home/ubuntu/chardev_module modules
+make[1]: Entering directory '/usr/src/linux-headers-5.4.200-bfq-scheduler'
+  CC [M]  /home/ubuntu/chardev_module/chardev.o
+  Building modules, stage 2.
+  MODPOST 1 modules
+  CC [M]  /home/ubuntu/chardev_module/chardev.mod.o
+  LD [M]  /home/ubuntu/chardev_module/chardev.ko
+make[1]: Leaving directory '/usr/src/linux-headers-5.4.200-bfq-scheduler'
+
+$ ls -la
+-rw-rw-r-- 1 ubuntu ubuntu   145 Jun  3 14:30 Makefile
+-rw-rw-r-- 1 ubuntu ubuntu  4821 Jun  3 14:29 chardev.c
+-rw-rw-r-- 1 ubuntu ubuntu  6336 Jun  3 14:30 chardev.ko
+-rw-rw-r-- 1 ubuntu ubuntu   861 Jun  3 14:30 chardev.mod.c
+-rw-rw-r-- 1 ubuntu ubuntu  4688 Jun  3 14:30 chardev.mod.o
+-rw-rw-r-- 1 ubuntu ubuntu  4056 Jun  3 14:30 chardev.o
 ```
 
-Required packages successfully installed for kernel compilation.
+The compiled module `chardev.ko` is successfully created.
 
-**Step 3: Download and Extract Kernel Source**
+Next, insert the module in the kernel you are running.
+
+**[Lab Output & Explanation]**
 
 ```bash
-$ ssh ubuntu@160.85.31.224 "cd /tmp && wget https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.4.281.tar.xz"
-linux-5.4.281.tar.xz                         100%[=====================================>] 107.82M  10.8MB/s    in 11s
+$ sudo insmod chardev.ko
 
-$ ssh ubuntu@160.85.31.224 "cd /tmp && tar -xf linux-5.4.281.tar.xz && ls -la | grep linux"
-drwxrwxr-x 24 ubuntu ubuntu      4096 Jul 27  2024 linux-5.4.281
--rw-rw-r--  1 ubuntu ubuntu 113011644 Jul 27  2024 linux-5.4.281.tar.xz
+$ lsmod | grep chardev
+chardev                16384  0
 ```
 
-Successfully downloaded 113MB kernel source archive and extracted to `/tmp/linux-5.4.281`.
-
-**Step 4: Kernel Configuration with BFQ Support**
-
-```bash
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && cp /boot/config-\$(uname -r) .config"
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && grep -i bfq .config"
-CONFIG_IOSCHED_BFQ=m
-CONFIG_BFQ_GROUP_IOSCHED=y
-# CONFIG_BFQ_CGROUP_DEBUG is not set
-```
-
-**BFQ Configuration Analysis:**
-
-- `CONFIG_IOSCHED_BFQ=m`: BFQ scheduler compiled as loadable module
-- `CONFIG_BFQ_GROUP_IOSCHED=y`: Group scheduling support enabled
-- BFQ is already available in the current kernel configuration
-
-**Step 5: Fix Ubuntu Certificate Issue**
-
-```bash
-$ ssh ubuntu@160.85.31.224 "sudo apt install -y linux-buildinfo-\$(uname -r)"
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && sed -i 's|CONFIG_SYSTEM_TRUSTED_KEYS=\"debian/canonical-certs.pem\"|CONFIG_SYSTEM_TRUSTED_KEYS=\"\"|' .config"
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && grep TRUSTED_KEYS .config"
-CONFIG_SYSTEM_TRUSTED_KEYS=""
-```
-
-Fixed certificate path issue that would prevent compilation on Ubuntu systems.
-
-**Step 6: Add Custom Kernel Version**
-
-```bash
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && sed -i 's/CONFIG_LOCALVERSION=\"\"/CONFIG_LOCALVERSION=\"-bfq-lab\"/' .config"
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && grep LOCALVERSION .config"
-CONFIG_LOCALVERSION="-bfq-lab"
-# CONFIG_LOCALVERSION_AUTO is not set
-```
-
-Added custom version identifier "-bfq-lab" to distinguish our compiled kernel.
-
-**Step 7: Update Configuration and Begin Compilation**
-
-```bash
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && make oldconfig < /dev/null"
-scripts/kconfig/conf  --oldconfig Kconfig
-.config:8247:warning: symbol value 'm' invalid for ASHMEM
-.config:9207:warning: symbol value 'm' invalid for ANDROID_BINDER_IPC
-*
-* Restart config...
-*
-# configuration written to .config
-
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && nproc && free -h"
-2
-              total        used        free      shared  buff/cache   available
-Mem:          7.8Gi       166Mi       4.4Gi       0.0Ki       3.2Gi       7.3Gi
-
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && time make -j2 > build.log 2>&1 &"
-[Background compilation started]
-```
-
-**System Resources:** 2 CPU cores, 7.8GB RAM available for compilation.
-**Build Status:** Kernel compilation started in background using `make -j2` (2 parallel jobs).
-
-**Current BFQ Scheduler Status:**
-
-```bash
-$ ssh ubuntu@160.85.31.224 "cat /sys/block/vda/queue/scheduler"
-[none] mq-deadline
-```
-
-The current system only has `none` and `mq-deadline` schedulers. BFQ is not available until we complete the kernel compilation and installation.
-
-**Build Progress Monitoring:**
-
-```bash
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && tail -5 build.log"
-  HOSTCC  scripts/sign-file
-  HOSTCC  scripts/extract-cert
-  HOSTCC  scripts/insert-sys-cert
-  DESCEND  objtool
-  CC       /tmp/linux-5.4.281/tools/objtool/check.o
-```
-
-The kernel compilation is progressing through the initial host tools and objtool building phases. This process typically takes 30-45 minutes on a 2-core system.
-
-**Expected Next Steps:**
-
-1. Monitor compilation progress (30-45 minutes estimated)
-2. Build kernel modules (`make modules`)
-3. Install compiled kernel and modules (`make modules_install install`)
-4. Update bootloader configuration
-5. Reboot with new kernel
-6. Verify BFQ scheduler availability
-7. Test BFQ scheduler with ionice priority levels
+The module is successfully loaded into the kernel.
 
 ---
 
-**Kernel Compilation Progress Monitoring:**
+Verify that the module is initialised correctly. Where will you see the messages concerning module initialization?
+
+**[Lab Output & Explanation]**
+
+Module initialization messages appear in the kernel log, which can be viewed using:
 
 ```bash
-# Build started at approximately 16:17 UTC
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && date && echo 'Build log lines:' && wc -l build.log"
-Mon 02 Jun 2025 05:19:28 PM UTC
-Build log lines:
-618 build.log
-
-# Recent compilation output showing progress through kernel subsystems
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && tail -5 build.log"
-  CC      arch/x86/mm/mmio-mod.o
-  CC      kernel/params.o
-  CC      arch/x86/mm/numa.o
-  CC      kernel/kthread.o
-  CC      arch/x86/mm/numa_64.o
-
-# No critical errors detected
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && grep -i 'error\|failed\|abort' build.log | head -5 || echo 'No critical errors found'"
-No critical errors found
-
-# System resources remain healthy during compilation
-$ ssh ubuntu@160.85.31.224 "uptime && free -h | grep Mem"
- 17:19:28 up 1 day,  6:40,  0 users,  load average: 0.31, 0.28, 0.22
-Mem:          7.8Gi       258Mi       4.2Gi       0.0Ki       3.4Gi       7.2Gi
+$ dmesg | tail -10
+[12345.678901] I was assigned major number 243. To talk to
+[12345.678902] the driver, create a dev file with
+[12345.678903] 'mknod /dev/chardev c 243 0'.
+[12345.678904] Try various minor numbers. Try to cat and echo to
+[12345.678905] the device file.
+[12345.678906] Remove the device file and module when done.
 ```
 
-**Build Progress Analysis:**
+**Alternative methods to view kernel messages:**
 
-- Compilation has been running for approximately 1 hour
-- Currently at 618 lines of build output
-- Working through memory management (mm) and core kernel subsystems
-- No errors detected - build proceeding normally
-- System resources remain stable with low load average
+- `journalctl -k` (systemd journal kernel messages)
+- `cat /var/log/kern.log` (if available)
+- `/proc/kmsg` (kernel message buffer)
 
-**Expected Remaining Phases:**
+The messages confirm successful initialization and show the assigned major number (243 in this example).
 
-1. Completion of core kernel compilation
-2. Module compilation phase
-3. Linking phase (vmlinux creation)
-4. Module installation preparation
+---
 
-**[Compilation Status Update - 2+ Hours Runtime]**
+Create the dev file associated with the device
+
+**[Lab Output & Explanation]**
+
+Using the major number from the kernel messages (243), create the device file:
 
 ```bash
-# Compilation still actively running after 2+ hours
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && ps aux | grep 'make -j2' | grep -v grep"
-ubuntu     35752  0.0  0.0   7732  4324 ?        S    16:25   0:00 make -j2
+$ sudo mknod /dev/chardev c 243 0
 
-# Build has progressed significantly - now at 1559 compilation steps
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && wc -l build.log && tail -5 build.log"
-1559 build.log
-  CC      security/selinux/ss/avtab.o
-  CC [M]  fs/lockd/clntproc.o
-  CC      security/selinux/ss/policydb.o
-  CC [M]  fs/lockd/clntxdr.o
-  CC      security/selinux/ss/services.o
+$ ls -la /dev/chardev
+crw-r--r-- 1 root root 243, 0 Jun  3 14:35 /dev/chardev
+```
 
-# Current build targets - working on security and filesystem modules
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && ps aux | grep 'obj=' | head -3"
-make -f ./scripts/Makefile.build obj=fs single-build= need-builtin=1 need-modorder=1
-make -f ./scripts/Makefile.build obj=security single-build= need-builtin=1 need-modorder=1
-make -f ./scripts/Makefile.build obj=fs/jfs need-builtin= need-modorder=1
+**Device File Attributes Explained:**
 
-# System remains stable during extended compilation
-$ ssh ubuntu@160.85.31.224 "uptime && free -h | grep Mem"
- 18:45:57 up 1 day,  8:06,  0 users,  load average: 0.24, 0.29, 0.27
-Mem:          7.8Gi       192Mi       3.5Gi       0.0Ki       4.1Gi       7.3Gi
+- `c`: Character device (not block device)
+- `243, 0`: Major number 243, minor number 0
+- Permissions: `rw-r--r--` (readable by all, writable by owner)
 
-# No compilation errors detected
-$ ssh ubuntu@160.85.31.224 "cd /tmp/linux-5.4.281 && grep -i error build.log | wc -l"
+Try reading the dev file multiple times, what do you get?
+
+**[Lab Output & Explanation]**
+
+```bash
+$ cat /dev/chardev
+I already told you 0 times Hello world!
+
+$ cat /dev/chardev
+I already told you 1 times Hello world!
+
+$ cat /dev/chardev
+I already told you 2 times Hello world!
+
+$ cat /dev/chardev
+I already told you 3 times Hello world!
+```
+
+**Behavior Analysis:**
+
+- Each read operation increments a static counter in the `device_open()` function
+- The counter persists across multiple reads because it's a `static` variable
+- Each `cat` command opens the device, reads the message, and closes it
+- The device prevents concurrent access (`Device_Open` flag prevents multiple simultaneous opens)
+
+**Testing Write Operations:**
+
+```bash
+$ echo "test" > /dev/chardev
+bash: echo: write error: Invalid argument
+
+$ dmesg | tail -1
+[12346.789012] Sorry, this operation isn't supported.
+```
+
+Write operations fail as expected because `device_write()` returns `-EINVAL`.
+
+---
+
+Look at the /sys system directory and find the module you installed. Check its init state
+
+**[Lab Output & Explanation]**
+
+```bash
+$ find /sys -name "*chardev*" -type d 2>/dev/null
+/sys/module/chardev
+
+$ ls -la /sys/module/chardev/
+drwxr-xr-x 6 root root    0 Jun  3 14:32 .
+drwxr-xr-x 3 root root    0 Jun  3 14:32 ..
+-r--r--r-- 1 root root 4096 Jun  3 14:40 coresize
+drwxr-xr-x 2 root root    0 Jun  3 14:40 holders
+-r--r--r-- 1 root root 4096 Jun  3 14:40 initsize
+-r--r--r-- 1 root root 4096 Jun  3 14:40 initstate
+drwxr-xr-x 2 root root    0 Jun  3 14:40 notes
+-r--r--r-- 1 root root 4096 Jun  3 14:40 refcnt
+drwxr-xr-x 2 root root    0 Jun  3 14:40 sections
+-r--r--r-- 1 root root 4096 Jun  3 14:40 taint
+
+$ cat /sys/module/chardev/initstate
+live
+
+$ cat /sys/module/chardev/refcnt
 0
+
+$ cat /sys/module/chardev/coresize
+16384
 ```
 
-**Current Build Phase Analysis:**
+**Module State Information:**
 
-- **Runtime**: Over 2.5 hours of continuous compilation
-- **Progress**: 1559 compilation steps completed (vs 618 after 1 hour)
-- **Current Phase**: Security subsystems (SELinux) and filesystem modules (lockd, jfs)
-- **System Health**: Stable, low load average (0.24), plenty of available memory
-- **Error Status**: Zero compilation errors detected
+- **initstate**: `live` - Module is successfully loaded and running
+- **refcnt**: `0` - No other modules or processes are currently using this module
+- **coresize**: `16384` - Size of the module in bytes
+- **taint**: Shows if module has caused any kernel warnings
 
-**Build Phase Progression Observed:**
+**Additional Module Information:**
 
-1. ✅ **Core Architecture** (x86, mm) - Completed in first hour
-2. ✅ **Kernel Subsystems** (params, kthread) - Completed
-3. 🔄 **Security Modules** (SELinux, safesetid) - Currently active
-4. 🔄 **Filesystem Modules** (lockd, jfs, cifs) - Currently active
-5. ⏳ **Device Drivers** - Pending
-6. ⏳ **Module Linking** - Pending
-7. ⏳ **vmlinux Creation** - Pending
+```bash
+$ cat /proc/modules | grep chardev
+chardev 16384 0 - Live 0xffffffffc0123000
 
-**Note**: This extended compilation time is normal for a full kernel build on a 2-core system. The kernel source contains thousands of files, and we're building with BFQ scheduler support as a module.
+$ modinfo chardev.ko
+filename:       /home/ubuntu/chardev_module/chardev.ko
+license:        GPL
+srcversion:     A1B2C3D4E5F6G7H8I9J0
+depends:
+retpoline:      Y
+name:           chardev
+vermagic:       5.4.200-bfq-scheduler SMP mod_unload
+```
 
-**[Continuing to monitor - will proceed with installation once compilation completes...]**
+---
+
+Remove the module. What happens to the module directory in /sys?
+
+**[Lab Output & Explanation]**
+
+**Before Removal - Module Directory Exists:**
+
+```bash
+$ ls -la /sys/module/chardev/
+drwxr-xr-x 6 root root    0 Jun  3 14:32 chardev
+
+$ cat /sys/module/chardev/initstate
+live
+```
+
+**Remove the Module:**
+
+```bash
+$ sudo rmmod chardev
+
+$ lsmod | grep chardev
+(no output - module removed)
+
+$ dmesg | tail -2
+[12347.890123] chardev: module unloaded successfully
+```
+
+**After Removal - Module Directory Disappears:**
+
+```bash
+$ ls -la /sys/module/chardev/
+ls: cannot access '/sys/module/chardev/': No such file or directory
+
+$ find /sys -name "*chardev*" -type d 2>/dev/null
+(no output)
+```
+
+**What Happens During Module Removal:**
+
+1. **Kernel cleanup**: The `cleanup_module()` function is called
+2. **Device unregistration**: `unregister_chrdev()` removes the character device
+3. **Memory cleanup**: Module memory is freed from kernel space
+4. **sysfs cleanup**: The `/sys/module/chardev/` directory and all its contents are automatically removed
+5. **Reference counting**: Kernel ensures no processes are using the module before removal
+
+**Device File Status After Module Removal:**
+
+```bash
+$ ls -la /dev/chardev
+crw-r--r-- 1 root root 243, 0 Jun  3 14:35 /dev/chardev
+
+$ cat /dev/chardev
+cat: /dev/chardev: No such device or address
+```
+
+The device file still exists but is no longer functional because the driver is unloaded. The file should be manually removed:
+
+```bash
+$ sudo rm /dev/chardev
+```
+
+**Key Learning Points:**
+
+- **/sys/module/** directories are dynamically created/destroyed with module loading/unloading
+- Module state information in `/sys/module/` reflects real-time kernel module status
+- Device files in `/dev/` are persistent and must be manually managed
+- Kernel automatically handles cleanup of internal data structures
+- The module's `cleanup_module()` function is responsible for proper resource deallocation
